@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 
@@ -11,86 +12,186 @@ import uuid
 from tqdm import tqdm
 import os
 
+from autoattack import AutoAttack
+
+import time
+
+
+# Transform images in dataset
+class TransformModel(nn.Module):
+    def __init__(self, model, transform):
+        super(TransformModel, self).__init__()
+        self.model = model
+        self.t = transform
+    
+
+    def forward(self, x):
+        return self.model(self.t(x))
+
+
 device = torch.device('cuda:1')
-
-model = resnet('resnet18')
-model.train()
-model = model.to(device)
-
-criterion = torch.nn.CrossEntropyLoss()
-criterion = criterion.to(device)
-
-attack = PGDAttack(model, loss_fn=criterion, nb_iter=5)
-
-epochs = 100
 
 transform = transforms.Compose(
     [
-     transforms.ToTensor(),
      transforms.RandomCrop(32, padding=4),
      transforms.RandomHorizontalFlip(),
      transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
 
+model = resnet('resnet18')
+model.train()
+model = model.to(device)
+model = TransformModel(model, transform)
+
+criterion = torch.nn.CrossEntropyLoss()
+criterion = criterion.to(device)
+
+eps = 0.3
+iters = 40
+attack = PGDAttack(model, loss_fn=criterion, nb_iter=iters, eps=eps)
+
+epochs = 200
+# epochs = 0
+
 batch_size = 128
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
-                                        download=True, transform=transform)
+                                        download=True, transform=transforms.ToTensor())
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
                                           shuffle=True, num_workers=2)
 
 testset = torchvision.datasets.CIFAR10(root='./data', train=False,
-                                       download=True, transform=transform)
+                                       download=True, transform=transforms.ToTensor())
 testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
-                                         shuffle=False, num_workers=2)
+                                         shuffle=True, num_workers=2)
 
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
+train = True
+
 optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
-lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,75])
+lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[80,140,180], gamma=0.1)
 
 PATH = './train_data'
 
-save_data = True
+if train:
+    save_data = False
 
-# Make sure proper folders exist
-os.makedirs("train_data", exist_ok=True)
-os.makedirs("train_data/imgs", exist_ok=True)
-os.makedirs("train_data/params", exist_ok=True)
+    if save_data:
+        # Make sure proper folders exist
+        os.makedirs("train_data", exist_ok=True)
+        os.makedirs("train_data/adv_imgs", exist_ok=True)
+        os.makedirs("train_data/clean_imgs", exist_ok=True)
+        os.makedirs("train_data/params", exist_ok=True)
 
-# Perform Adversarial Training with PGD and save images and model parameters
-for ep in range(epochs):
-    c = 0
-    for data in tqdm(trainloader, desc=f"Training epoch {ep}"):
-        inputs, labels = data
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+    times = []
 
-        optimizer.zero_grad()
+    start_time = time.perf_counter()
 
-        adv_inputs = attack.perturb(inputs, labels)[0]
-        if save_data and c < 1:
-            param = f"{c}-{ep}"
-            os.mkdir(f"{PATH}/imgs/{param}")
-            # Save perturbed images
-            for i, l in zip(adv_inputs, labels):
-                fname = f"{l}_{str(uuid.uuid4())}"
-                torchvision.utils.save_image(i, f"{PATH}/imgs/{param}/{fname}.png")
-            # Save model parameters
-            params = torch.cat([v.flatten() for k, v in model.state_dict().items() if 'weight' in k or 'bias' in k]).cpu().numpy()
-            np.savetxt(f"{PATH}/params/{param}.txt", params, fmt="%f")
-            c += 1
-        
-        optimizer.zero_grad()
+    # Perform Adversarial Training with PGD and save images and model parameters
+    for ep in range(epochs):
+        c = 0
+        pbar = tqdm(trainloader, desc=f"Training epoch {ep}")
+        for step, data in enumerate(pbar):
+            inputs, labels = data
+            inputs = inputs.to(device)
+            labels = labels.to(device)
 
-        loss = criterion(model(inputs), labels)
-        loss += criterion(model(adv_inputs), labels)
+            optimizer.zero_grad()
 
-        loss.backward()
-        optimizer.step()
-    lr_scheduler.step()
+            # Perform attack and measure time taken
+            adv_inputs = attack.perturb(inputs.clone(), labels)[0]
 
-model.eval()
+            if save_data and (c < 1) and (ep % 3 == 0):
+                s = time.perf_counter()
+                param = f"{c}-{ep}"
+                os.mkdir(f"{PATH}/adv_imgs/{param}")
+                os.mkdir(f"{PATH}/clean_imgs/{param}")
+                # Save perturbed images
+                for adv_im, clean_im, l in zip(adv_inputs, inputs, labels):
+                    fname = f"{l}_{str(uuid.uuid4())}"
+                    torchvision.utils.save_image(adv_im, f"{PATH}/adv_imgs/{param}/{fname}.png")
+                    torchvision.utils.save_image(clean_im, f"{PATH}/clean_imgs/{param}/{fname}.png")
+                # Save model parameters
+                params = torch.cat([v.flatten() for k, v in model.state_dict().items() if 'weight' in k or 'bias' in k]).cpu().numpy()
+                np.savetxt(f"{PATH}/params/{param}.txt", params, fmt="%f")
+                c += 1
+                e = time.perf_counter()
+
+                # Ignore time taken by saving files
+                times.append(e - s)
+
+            if ep < 25:
+                loss = criterion(model(inputs), labels)
+            else:
+                loss = criterion(model(inputs), labels) + criterion(model(adv_inputs), labels)
+
+            pbar.set_description(f"Training epoch {ep}, loss = {loss:2f}")
+
+            loss.backward()
+            optimizer.step()
+        lr_scheduler.step()
+
+    end_time = time.perf_counter()
+
+    print(f"Approx. time taken by AT = {(end_time - start_time) - sum(times)}")
+
+    # Save AT model
+    torch.save(model.state_dict(), f"{PATH}/at_model.pt")
+else:
+    model.load_state_dict(torch.load(f"{PATH}/at_model.pt", weights_only=True))
 
 
+accuracy = []
+# Evaluate model roboustness accuracy
+for data in tqdm(trainloader, desc=f"Testing Robust Train Accuracy"):
+    inputs, labels = data
+    inputs = inputs.to(device)
+    labels = labels.to(device)
+
+    adv_input = attack.perturb(inputs, labels)[0]
+
+    outputs = torch.argmax(model(adv_input), dim=-1)
+
+    acc = (labels == outputs).int()
+
+    accuracy.append(acc.sum() / acc.shape[0])
+
+
+print(f"Train Accuracy: {sum(acc) / len(acc)}")
+
+
+accuracy = []
+# Evaluate model roboustness accuracy
+for data in tqdm(testloader, desc=f"Testing Robust Test Accuracy"):
+    inputs, labels = data
+    inputs = inputs.to(device)
+    labels = labels.to(device)
+
+    adv_input = attack.perturb(inputs, labels)[0]
+
+    outputs = torch.argmax(model(adv_input), dim=-1)
+
+    acc = (labels == outputs).int()
+
+    accuracy.append(acc.sum() / acc.shape[0])
+
+
+print(f"Test Accuracy: {sum(acc) / len(acc)}")
+
+# adversary = AutoAttack(model, norm='Linf', eps=eps, version='standard', device=device)
+
+# images = []
+# labels = []
+# for data in tqdm(testloader, desc="Evaluating robostness of trained model"):
+#     inputs, label = data
+#     inputs = inputs.to(device)
+#     label = label.to(device)
+#     images.append(inputs)
+#     labels.append(label)
+
+# images = torch.cat(images)
+# labels = torch.cat(labels)
+
+# x_adv = adversary.run_standard_evaluation(images, labels, bs=batch_size)
