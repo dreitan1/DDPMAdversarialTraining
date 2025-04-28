@@ -47,10 +47,10 @@ criterion = torch.nn.CrossEntropyLoss()
 criterion = criterion.to(device)
 
 eps = 0.3
-iters = 40
+iters = 5
 attack = PGDAttack(model, loss_fn=criterion, nb_iter=iters, eps=eps)
 
-epochs = 200
+epochs = 100
 # epochs = 0
 
 batch_size = 128
@@ -68,15 +68,15 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-train = True
+train = False
 
-optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
-lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[80,140,180], gamma=0.1)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=1e-4)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 
 PATH = './train_data'
 
 if train:
-    save_data = False
+    save_data = True
 
     if save_data:
         # Make sure proper folders exist
@@ -100,31 +100,31 @@ if train:
 
             optimizer.zero_grad()
 
-            # Perform attack and measure time taken
-            adv_inputs = attack.perturb(inputs.clone(), labels)[0]
-
-            if save_data and (c < 1) and (ep % 3 == 0):
-                s = time.perf_counter()
-                param = f"{c}-{ep}"
-                os.mkdir(f"{PATH}/adv_imgs/{param}")
-                os.mkdir(f"{PATH}/clean_imgs/{param}")
-                # Save perturbed images
-                for adv_im, clean_im, l in zip(adv_inputs, inputs, labels):
-                    fname = f"{l}_{str(uuid.uuid4())}"
-                    torchvision.utils.save_image(adv_im, f"{PATH}/adv_imgs/{param}/{fname}.png")
-                    torchvision.utils.save_image(clean_im, f"{PATH}/clean_imgs/{param}/{fname}.png")
-                # Save model parameters
-                params = torch.cat([v.flatten() for k, v in model.state_dict().items() if 'weight' in k or 'bias' in k]).cpu().numpy()
-                np.savetxt(f"{PATH}/params/{param}.txt", params, fmt="%f")
-                c += 1
-                e = time.perf_counter()
-
-                # Ignore time taken by saving files
-                times.append(e - s)
-
             if ep < 25:
                 loss = criterion(model(inputs), labels)
             else:
+                # Perform attack and measure time taken
+                adv_inputs = attack.perturb(inputs.clone(), labels)[0]
+
+                if save_data and (c < 1) and (ep % 2 == 0):
+                    s = time.perf_counter()
+                    param = f"{c}-{ep}"
+                    os.mkdir(f"{PATH}/adv_imgs/{param}")
+                    os.mkdir(f"{PATH}/clean_imgs/{param}")
+                    # Save perturbed images
+                    for adv_im, clean_im, l in zip(adv_inputs, inputs, labels):
+                        fname = f"{l}_{str(uuid.uuid4())}"
+                        torchvision.utils.save_image(adv_im, f"{PATH}/adv_imgs/{param}/{fname}.png")
+                        torchvision.utils.save_image(clean_im, f"{PATH}/clean_imgs/{param}/{fname}.png")
+                    # Save model parameters
+                    params = torch.cat([v.flatten() for k, v in model.state_dict().items() if 'weight' in k or 'bias' in k]).cpu().numpy()
+                    np.savetxt(f"{PATH}/params/{param}.txt", params, fmt="%f")
+                    c += 1
+                    e = time.perf_counter()
+
+                    # Ignore time taken by saving files
+                    times.append(e - s)
+
                 loss = criterion(model(inputs), labels) + criterion(model(adv_inputs), labels)
 
             pbar.set_description(f"Training epoch {ep}, loss = {loss:2f}")
@@ -162,6 +162,8 @@ for data in tqdm(trainloader, desc=f"Testing Robust Train Accuracy"):
 print(f"Train Accuracy: {sum(acc) / len(acc)}")
 
 
+
+
 accuracy = []
 # Evaluate model roboustness accuracy
 for data in tqdm(testloader, desc=f"Testing Robust Test Accuracy"):
@@ -180,18 +182,4 @@ for data in tqdm(testloader, desc=f"Testing Robust Test Accuracy"):
 
 print(f"Test Accuracy: {sum(acc) / len(acc)}")
 
-# adversary = AutoAttack(model, norm='Linf', eps=eps, version='standard', device=device)
 
-# images = []
-# labels = []
-# for data in tqdm(testloader, desc="Evaluating robostness of trained model"):
-#     inputs, label = data
-#     inputs = inputs.to(device)
-#     label = label.to(device)
-#     images.append(inputs)
-#     labels.append(label)
-
-# images = torch.cat(images)
-# labels = torch.cat(labels)
-
-# x_adv = adversary.run_standard_evaluation(images, labels, bs=batch_size)
