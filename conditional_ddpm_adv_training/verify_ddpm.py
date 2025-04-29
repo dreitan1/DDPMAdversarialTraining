@@ -16,6 +16,7 @@ from models.resnet_embedder import ResNetEmbedder
 parser = argparse.ArgumentParser()
 parser.add_argument('--diffusion-path', type=str, required=True, help='Path to trained DDPM model')
 parser.add_argument('--resnet-path', type=str, default=None, help='Path to trained ResNet model')
+parser.add_argument('--noise', type=float, default=0, help='Noise level for the input images')
 parser.add_argument('--save-dir', type=str, default='./verify_samples', help='Directory to save generated images')
 args = parser.parse_args()
 
@@ -51,7 +52,7 @@ diffusion_model.eval()
 x_clean, _ = next(iter(testloader))
 x_clean = x_clean.to(device)
 
-noise = 0.5 * torch.randn_like(x_clean)
+noise = args.noise * torch.randn_like(x_clean)
 x_noisy = (x_clean + noise).clamp(-1, 1)
 
 batch_size = x_clean.size(0)
