@@ -1,42 +1,20 @@
-# models/resnet_embedder.py
-
 import torch
 import torch.nn as nn
 
 class ResNetEmbedder(nn.Module):
     """
-    Extracts a trainable embedding from ResNet parameters.
+    Converts the final linear layer of a ResNet18 model into a 256-dim condition embedding.
+    This avoids high memory use from embedding all parameters.
     """
-    def __init__(self, resnet, embed_dim=256):
+    def __init__(self, resnet_model=None, embed_dim=256):
         super().__init__()
-        self.resnet = resnet
+        self.resnet = resnet_model
         self.embed_dim = embed_dim
-        
-        # Create an MLP to map flattened parameters to embed_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(self.get_total_params(), embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim)
-        )
-
-    def get_total_params(self):
-        """
-        Count total number of parameters in ResNet model.
-        """
-        total = 0
-        for p in self.resnet.parameters():
-            total += p.numel()
-        return total
+        self.proj = nn.Linear(512 * 10 + 10, embed_dim)  # 512 weights x 10 classes + 10 biases
 
     def forward(self):
-        """
-        Returns a (1, embed_dim) tensor representing the ResNet.
-        """
-        params = []
-        for p in self.resnet.parameters():
-            params.append(p.flatten())
-
-        params = torch.cat(params)  # (total_params,)
-        params = params.unsqueeze(0)  # (1, total_params)
-        embed = self.mlp(params)
-        return embed
+        assert self.resnet is not None, "resnet_model must be set before calling forward()"
+        weight = self.resnet.linear.weight.view(-1)
+        bias = self.resnet.linear.bias.view(-1)
+        flat = torch.cat([weight, bias], dim=0).to(self.proj.weight.device)
+        return self.proj(flat)
