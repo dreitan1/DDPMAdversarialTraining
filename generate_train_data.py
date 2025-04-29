@@ -6,6 +6,7 @@ import torchvision.transforms as transforms
 import numpy as np
 
 from resnet import resnet
+from wideresnet import wideresnet
 from pgd import PGDAttack
 
 import uuid
@@ -39,6 +40,7 @@ transform = transforms.Compose(
     ])
 
 model = resnet('resnet18')
+# model = wideresnet('wrn-28-10-swish')
 model.train()
 model = model.to(device)
 model = TransformModel(model, transform)
@@ -50,10 +52,10 @@ eps = 0.3
 iters = 5
 attack = PGDAttack(model, loss_fn=criterion, nb_iter=iters, eps=eps)
 
-epochs = 100
+epochs = 50
 # epochs = 0
 
-batch_size = 128
+batch_size = 256
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
                                         download=True, transform=transforms.ToTensor())
@@ -68,7 +70,7 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-train = False
+train = True
 
 optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=1e-4)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
@@ -76,7 +78,7 @@ lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 PATH = './train_data'
 
 if train:
-    save_data = True
+    save_data = False
 
     if save_data:
         # Make sure proper folders exist
@@ -100,13 +102,13 @@ if train:
 
             optimizer.zero_grad()
 
-            if ep < 25:
+            if ep < 10:
                 loss = criterion(model(inputs), labels)
             else:
                 # Perform attack and measure time taken
                 adv_inputs = attack.perturb(inputs.clone(), labels)[0]
 
-                if save_data and (c < 1) and (ep % 2 == 0):
+                if save_data and (c < 1) and (ep % 4 == 0):
                     s = time.perf_counter()
                     param = f"{c}-{ep}"
                     os.mkdir(f"{PATH}/adv_imgs/{param}")
@@ -138,7 +140,7 @@ if train:
     print(f"Approx. time taken by AT = {(end_time - start_time) - sum(times)}")
 
     # Save AT model
-    torch.save(model.state_dict(), f"{PATH}/at_model.pt")
+    torch.save(model.state_dict(), f"{PATH}/at_model1.pt")
 else:
     model.load_state_dict(torch.load(f"{PATH}/at_model.pt", weights_only=True))
 
