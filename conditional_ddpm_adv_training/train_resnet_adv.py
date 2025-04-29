@@ -85,7 +85,7 @@ def main():
         for x_clean, labels in pbar:
             x_clean, labels = x_clean.to(device), labels.to(device)
 
-            noise = 0.5 * torch.randn_like(x_clean)
+            noise = 0 * torch.randn_like(x_clean)
             x_noisy = (x_clean + noise).clamp(-1, 1)
 
             batch_size = x_clean.size(0)
@@ -121,32 +121,33 @@ def main():
             total += labels.size(0)
             pbar.set_postfix(loss=total_loss / total, acc=100. * correct / total)
 
-        # ====== Clean Test Accuracy ======
-        resnet_model.eval()
-        correct_test = 0
-        total_test = 0
-        with torch.no_grad():
+        if epoch % 50 == 0:
+            # ====== Clean Test Accuracy ======
+            resnet_model.eval()
+            correct_test = 0
+            total_test = 0
+            with torch.no_grad():
+                for x_test, y_test in testloader:
+                    x_test, y_test = x_test.to(device), y_test.to(device)
+                    outputs = resnet_model(x_test)
+                    _, predicted = outputs.max(1)
+                    correct_test += predicted.eq(y_test).sum().item()
+                    total_test += y_test.size(0)
+            test_acc = 100. * correct_test / total_test
+            print(f"[Epoch {epoch}] Clean Test Accuracy: {test_acc:.2f}%")
+
+            # ====== FGSM Adversarial Accuracy ======
+            correct_fgsm = 0
+            total_fgsm = 0
             for x_test, y_test in testloader:
                 x_test, y_test = x_test.to(device), y_test.to(device)
-                outputs = resnet_model(x_test)
+                x_fgsm = fgsm_attack(resnet_model, criterion, x_test, y_test, epsilon=args.fgsm_eps)
+                outputs = resnet_model(x_fgsm)
                 _, predicted = outputs.max(1)
-                correct_test += predicted.eq(y_test).sum().item()
-                total_test += y_test.size(0)
-        test_acc = 100. * correct_test / total_test
-        print(f"[Epoch {epoch}] Clean Test Accuracy: {test_acc:.2f}%")
-
-        # ====== FGSM Adversarial Accuracy ======
-        correct_fgsm = 0
-        total_fgsm = 0
-        for x_test, y_test in testloader:
-            x_test, y_test = x_test.to(device), y_test.to(device)
-            x_fgsm = fgsm_attack(resnet_model, criterion, x_test, y_test, epsilon=args.fgsm_eps)
-            outputs = resnet_model(x_fgsm)
-            _, predicted = outputs.max(1)
-            correct_fgsm += predicted.eq(y_test).sum().item()
-            total_fgsm += y_test.size(0)
-        fgsm_acc = 100. * correct_fgsm / total_fgsm
-        print(f"[Epoch {epoch}] FGSM Adversarial Accuracy (eps={args.fgsm_eps}): {fgsm_acc:.2f}%")
+                correct_fgsm += predicted.eq(y_test).sum().item()
+                total_fgsm += y_test.size(0)
+            fgsm_acc = 100. * correct_fgsm / total_fgsm
+            print(f"[Epoch {epoch}] FGSM Adversarial Accuracy (eps={args.fgsm_eps}): {fgsm_acc:.2f}%")
 
         if (epoch % args.save_every == 0) or (epoch == args.epochs):
             ckpt_path = os.path.join(args.save_dir, f'resnet_epoch{epoch}.pth')
