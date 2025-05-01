@@ -1,112 +1,113 @@
-import os
 import argparse
+import os
+import time
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
-import torchvision
-import torchvision.transforms as transforms
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 
 from models.conditional_unet import ConditionalUNet
 from models.conditional_diffusion import GaussianDiffusion
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from load_data import Dataset
 
-# ====== Argument parser ======
-parser = argparse.ArgumentParser()
-parser.add_argument('--batch-size', type=int, default=128)
-parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--save-every', type=int, default=10, help='Save checkpoint every N epochs')
-parser.add_argument('--image-dir', type=str, required=True, help='Path to directory of input images')
-args = parser.parse_args()
 
-# ====== Device setup ======
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-print(f"Using device: {device}")
+def train_diffusion(ddpm, dataloader, optimizer, epochs, device, save_path, dataset_size, save_every):
+    ddpm.to(device)
+    ddpm.train()
 
-# ====== Configurations ======
-batch_size = args.batch_size
-learning_rate = args.lr
-num_epochs = args.epochs
-save_every = args.save_every
-cond_dim = 256
+    total_train_start = time.time()
+    epoch_times = []
 
-# ====== Custom Image Directory Dataset ======
-from PIL import Image
-from pathlib import Path
+    for epoch in range(epochs):
+        epoch_start = time.time()
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")
+        total_loss = 0.0
 
-class CustomImageDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.files = list(Path(root_dir).rglob("*.png")) + list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.jpeg"))
-        self.transform = transform
+        for param_embed, x_clean, x_adv in pbar:
+            x_clean = x_clean.to(device)
+            x_adv = x_adv.to(device)
+            param_embed = param_embed.to(device)
 
-    def __len__(self):
-        return len(self.files)
+            # Truncate param vector to 256-dim
+            param_embed = param_embed.view(param_embed.size(0), -1)
+            param_proj = param_embed[:, :256].to(device)
 
-    def __getitem__(self, idx):
-        image_path = self.files[idx]
-        image = Image.open(image_path).convert("RGB")
-        if self.transform:
-            image = self.transform(image)
-        return image, 0  # dummy label
+            t = torch.randint(0, ddpm.timesteps, (x_clean.size(0),), device=device).long()
+            loss = ddpm.p_losses(x_start=x_adv, t=t, clean_img=x_clean, param=param_proj)
 
-transform = transforms.Compose([
-    transforms.Resize((32, 32)),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-])
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-trainset = CustomImageDataset(root_dir=args.image_dir, transform=transform)
-num_workers = 0 if device.type == 'mps' else 4
-trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            total_loss += loss.item()
+            pbar.set_postfix(loss=total_loss / (pbar.n + 1))
 
-# ====== Initialize Model ======
-cond_unet = ConditionalUNet(cond_dim=cond_dim).to(device)
-diffusion_model = GaussianDiffusion(model=cond_unet, timesteps=1000).to(device)
+        epoch_time = time.time() - epoch_start
+        epoch_times.append(epoch_time)
 
-optimizer = optim.Adam(diffusion_model.parameters(), lr=learning_rate)
+        # Always save latest
+        os.makedirs(save_path, exist_ok=True)
 
-# Dummy embedder for now (random embeddings)
-def get_random_condition(batch_size, cond_dim, device):
-    return torch.randn(batch_size, cond_dim, device=device)
+        # Save every N epochs
+        if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
+            epoch_path = os.path.join(save_path, f"diffusion_epoch{epoch+1}.pth")
+            torch.save(ddpm.state_dict(), epoch_path)
+            print(f"Saved model checkpoint: {epoch_path}")
+        else:
+            print(f"Epoch {epoch+1} completed. No checkpoint saved.")
 
-# ====== Training Loop ======
-start_epoch = 0
-os.makedirs('checkpoints_ddpm', exist_ok=True)
+    total_time = time.time() - total_train_start
+    avg_epoch_time = sum(epoch_times) / len(epoch_times)
 
-for epoch in range(start_epoch, num_epochs):
-    diffusion_model.train()
-    pbar = tqdm(trainloader, desc=f"Diffusion Training Epoch {epoch+1}/{num_epochs}")
-    epoch_loss = 0.0
+    # Get GPU or CPU name
+    if device.type == "cuda":
+        device_name = torch.cuda.get_device_name(device)
+    elif device.type == "mps":
+        device_name = "Apple MPS (Metal)"
+    else:
+        device_name = "CPU"
 
-    for x_clean, _ in pbar:
-        x_clean = x_clean.to(device)
-        batch_size = x_clean.size(0)
+    # Save training report
+    report_path = os.path.join(save_path, "train_report.txt")
+    with open(report_path, "w") as f:
+        f.write("=== Training Report ===\n")
+        f.write(f"Total epochs: {epochs}\n")
+        f.write(f"Dataset size: {dataset_size} samples\n")
+        f.write(f"Device used: {device} ({device_name})\n")
+        f.write(f"Total training time: {total_time:.2f} seconds\n")
+        f.write(f"Average time per epoch: {avg_epoch_time:.2f} seconds\n")
 
-        # Random condition for now
-        cond_embed = get_random_condition(batch_size, cond_dim, device)
+    print(f"\nTraining complete. Report saved to: {report_path}")
 
-        # Sample random timestep t
-        t = torch.randint(0, diffusion_model.timesteps, (batch_size,), device=device).long()
 
-        # Compute loss
-        loss = diffusion_model.p_losses(x_start=x_clean, t=t, cond_embed=cond_embed)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, required=True, help='Path to custom dataset')
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--save-dir', type=str, default='checkpoints_ddpm')
+    parser.add_argument('--save-every', type=int, default=5, help='Save checkpoint every N epochs')
+    args = parser.parse_args()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    device = torch.device("mps" if torch.backends.mps.is_available() else
+                          "cuda" if torch.cuda.is_available() else
+                          "cpu")
+    print(f"Using device: {device}")
 
-        epoch_loss += loss.item()
-        pbar.set_postfix(loss=epoch_loss / (pbar.n + 1))
+    dataset = Dataset(PATH=args.data_dir)
+    dataset_size = len(dataset)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=0)
 
-    # Save checkpoint
-    if (epoch + 1) % save_every == 0 or (epoch + 1) == num_epochs:
-        torch.save(diffusion_model.state_dict(), f'checkpoints_ddpm/diffusion_from_image_epoch{epoch+1}.pth')
-        print(f"Checkpoint saved at epoch {epoch+1}.")
+    model = ConditionalUNet(param_dim=256)
+    diffusion = GaussianDiffusion(model=model, timesteps=1000)
+    optimizer = optim.Adam(diffusion.parameters(), lr=args.lr)
 
-print("Training completed.")
+    train_diffusion(diffusion, dataloader, optimizer, args.epochs, device, args.save_dir, dataset_size, args.save_every)
+
+
+if __name__ == '__main__':
+    main()

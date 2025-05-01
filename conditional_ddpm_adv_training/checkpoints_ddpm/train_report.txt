@@ -1,0 +1,6 @@
+=== Training Report ===
+Total epochs: 2
+Dataset size: 4736 samples
+Device used: mps (Apple MPS (Metal))
+Total training time: 50.33 seconds
+Average time per epoch: 25.16 seconds
