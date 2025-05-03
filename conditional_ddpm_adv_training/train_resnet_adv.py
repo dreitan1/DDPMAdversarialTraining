@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from models.resnet import resnet
 from models.conditional_unet import ConditionalUNet
 from models.conditional_diffusion import GaussianDiffusion
+from models.resnet_embedder import ResNetEmbedder
 import time
 
 
@@ -26,6 +27,7 @@ def main():
     parser.add_argument('--save-dir', type=str, default='checkpoints_resnet_adv')
     parser.add_argument('--diffusion-path', type=str, required=True)
     parser.add_argument('--save-every', type=int, default=10)
+    parser.add_argument('--timesteps', type=int, default=1000)
     args = parser.parse_args()
 
     if torch.backends.mps.is_available():
@@ -48,7 +50,7 @@ def main():
     testloader = DataLoader(testset, batch_size=100, shuffle=False, num_workers=2)
 
     cond_unet = ConditionalUNet(param_dim=256).to(device)
-    diffusion_model = GaussianDiffusion(model=cond_unet, timesteps=1000).to(device)
+    diffusion_model = GaussianDiffusion(model=cond_unet, timesteps=args.timesteps).to(device)
     diffusion_model.load_state_dict(torch.load(args.diffusion_path, map_location=device))
     diffusion_model.eval()
 
@@ -62,8 +64,16 @@ def main():
 
     total_train_start = time.time()
     epoch_times = []
+    cond_dim = 256
+
+    # Determine the output dimension of the ResNet model
+    dummy_input = torch.randn(1, 3, 32, 32).to(device)  # Assuming CIFAR-10 input size (3x32x32)
+    with torch.no_grad():
+        resnet_output = resnet_model(dummy_input)
+    input_dim = resnet_output.view(resnet_output.size(0), -1).shape[1]  # Flatten and get feature size
 
     for epoch in range(1, args.epochs + 1):
+        ep_start_time = time.time()
         epoch_start = time.time()
 
         resnet_model.train()
@@ -74,23 +84,32 @@ def main():
         show_images = (epoch % 50 == 0 or epoch == args.epochs)
         if show_images:
             fig, axes = plt.subplots(10, 2, figsize=(10, 15))
-        i = 0
+            i = 0
 
         pbar = tqdm(trainloader, desc=f"Epoch {epoch}/{args.epochs}")
         for x_clean, labels in pbar:
             x_clean, labels = x_clean.to(device), labels.to(device)
 
-            #get the model parameters and tuncate them to 256
-            flat_params = extract_resnet_params(resnet_model).detach().to(device)
-            param_proj = flat_params[:256].unsqueeze(0).expand(x_clean.size(0), -1).to(device)
+            output_clean = resnet_model(x_clean)
+            input_dim = output_clean.view(output_clean.size(0), -1).shape[1]  # Flatten and get feature size
 
+            # Initialize the embedder with the correct input_dim
+            embedder = ResNetEmbedder(input_dim=input_dim, out_dim=cond_dim).to(device)
+            embedder.resnet = resnet_model
+
+            # Pass the flattened ResNet output to the embedder
             with torch.no_grad():
+                flattened_output = output_clean.view(output_clean.size(0), -1)  # Flatten the ResNet output
+                param_vec = embedder(flattened_output)
                 start_time = time.time()
-                generated_img = diffusion_model.predict_image(x_clean, param_proj)
+                generated_img = diffusion_model.predict_image(x_clean, param_vec)
                 elapsed_time = time.time() - start_time
                 print(f"Time taken for diffusion_model.predict_image: {elapsed_time:.4f} seconds")
 
                 if (epoch % args.save_every == 0) or (epoch == args.epochs):
+                    # ====== Visualize and Save ======
+                    os.makedirs(args.save_dir, exist_ok=True)
+                    fig, axes = plt.subplots(5, 2, figsize=(8, 2 * 5))
                     for i in range(5):
                         img_clean = x_clean[i].cpu() * 0.5 + 0.5
                         img_gen = generated_img[i].cpu() * 0.5 + 0.5
@@ -110,25 +129,28 @@ def main():
                     print(f"Saved comparison plot to {save_path}")
                     plt.close()
 
-            outputs = resnet_model(generated_img)
-            loss = criterion(outputs, labels)
+            # Forward pass on both clean and adversarial data
+            
+            output_adv = resnet_model(generated_img)
+
+            # Combine losses
+            loss_clean = nn.CrossEntropyLoss()(output_clean, labels)
+            loss_adv = nn.CrossEntropyLoss()(output_adv, labels)
+            loss = 0.5 * loss_clean + 0.5 * loss_adv
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item() * x_clean.size(0)
-            _, predicted = outputs.max(1)
+            _, predicted = output_clean.max(1)
             correct += predicted.eq(labels).sum().item()
             total += labels.size(0)
             pbar.set_postfix(loss=total_loss / total, acc=100. * correct / total)
 
-        if show_images:
-            plt.tight_layout()
-            save_path = os.path.join(args.save_dir, f'train_{resnet_name}_adv-{epoch}.png')
-            plt.savefig(save_path)
-            print(f"Saved comparison plot to {save_path}")
-            plt.close()
+        ep_elapsed_time = time.time() - ep_start_time
+        print(f"Time taken for epoch {epoch} : {ep_elapsed_time:.4f} seconds")
+
 
         resnet_model.eval()
         correct_test = 0

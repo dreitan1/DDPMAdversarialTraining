@@ -86,6 +86,12 @@ def main():
     clean_acc = 100. * correct_clean / total
     pgd_acc = 100. * correct_pgd / total
 
+    plt.tight_layout()
+    base_path = os.path.splitext(args.resnet_path)[0]  # removes .pth
+    save_path = base_path + "_comparison.png"
+    plt.savefig(save_path)
+    print(f"Saved comparison image to: {save_path}")
+    plt.show()
     print(f"Clean Accuracy: {clean_acc:.2f}%")
     print(f"PGD Accuracy (eps={args.pgd_eps}, iters={args.pgd_iters}): {pgd_acc:.2f}%")
 

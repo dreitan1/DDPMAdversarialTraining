@@ -11,10 +11,13 @@ from models.conditional_unet import ConditionalUNet
 from models.conditional_diffusion import GaussianDiffusion
 from models.resnet import resnet
 from models.resnet_embedder import ResNetEmbedder
+import time
 
 # ====== Argument parser ======
 parser = argparse.ArgumentParser()
-parser.add_argument('--diffusion-path', type=str, required=True, help='Path to trained DDPM model')
+parser.add_argument('--diffusion-path1', type=str, required=False, help='Path to trained DDPM model')
+parser.add_argument('--diffusion-path2', type=str, required=False, help='Path to trained DDPM model')
+parser.add_argument('--diffusion-path3', type=str, required=False, help='Path to trained DDPM model')
 parser.add_argument('--resnet-path', type=str, default=None, help='Path to trained ResNet model')
 parser.add_argument('--save-dir', type=str, default='./verify_ddpm', help='Directory to save generated images')
 args = parser.parse_args()
@@ -39,12 +42,23 @@ testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True
 testloader = DataLoader(testset, batch_size=5, shuffle=True, num_workers=num_workers)
 
 # ====== Load trained diffusion model ======
-cond_unet = ConditionalUNet(param_dim=256).to(device)
-diffusion_model = GaussianDiffusion(model=cond_unet, timesteps=1000).to(device)
+diffusion_path3 = "checkout_ddpm_t1000_ep500/diffusion_epoch500.pth"
+diffusion_path2 = "checkout_ddpm_t500_ep500/diffusion_epoch500.pth"
+diffusion_path1 = "checkout_ddpm_t300_ep500/diffusion_epoch500.pth"
+cond_unet1 = ConditionalUNet(param_dim=256).to(device)
+diffusion_model1 = GaussianDiffusion(model=cond_unet1, timesteps=300).to(device)
+diffusion_model1.load_state_dict(torch.load(diffusion_path1, map_location=device))
+diffusion_model1.eval()
 
-state_dict = torch.load(args.diffusion_path, map_location=device)
-diffusion_model.load_state_dict(state_dict)
-diffusion_model.eval()
+cond_unet2 = ConditionalUNet(param_dim=256).to(device)
+diffusion_model2 = GaussianDiffusion(model=cond_unet2, timesteps=500).to(device)
+diffusion_model2.load_state_dict(torch.load(diffusion_path1, map_location=device))
+diffusion_model2.eval()
+
+cond_unet3 = ConditionalUNet(param_dim=256).to(device)
+diffusion_model3 = GaussianDiffusion(model=cond_unet3, timesteps=1000).to(device)
+diffusion_model3.load_state_dict(torch.load(diffusion_path1, map_location=device))
+diffusion_model3.eval()
 
 # ====== Get sample clean images ======
 clean_img, _ = next(iter(testloader))  # shape: (B, 3, 32, 32)
@@ -70,29 +84,56 @@ else:
 
 # ====== Predict adversarial image using diffusion ======
 with torch.no_grad():
-    generated_img = diffusion_model.predict_image(clean_img, param_vec)
+    start_time = time.time()
+    generated_img1 = diffusion_model1.predict_image(clean_img, param_vec)
+    end_time = time.time()
+    time_per_image = (end_time - start_time) / batch_size
+    print(f"Estimated time to generate one image (T={diffusion_model1.timesteps}): {time_per_image:.4f} seconds")
+
+   
+    start_time = time.time()
+    generated_img2 = diffusion_model2.predict_image(clean_img, param_vec)
+    end_time = time.time()
+    time_per_image = (end_time - start_time) / batch_size
+    print(f"Estimated time to generate one image (T={diffusion_model2.timesteps}): {time_per_image:.4f} seconds")
+
+
+    start_time = time.time()
+    generated_img3 = diffusion_model3.predict_image(clean_img, param_vec)
+    end_time = time.time()
+    time_per_image = (end_time - start_time) / batch_size
+    print(f"Estimated time to generate one image (T={diffusion_model3.timesteps}): {time_per_image:.4f} seconds")
+
 
 # ====== Visualize and Save ======
 os.makedirs(args.save_dir, exist_ok=True)
-fig, axes = plt.subplots(batch_size, 2, figsize=(8, 2 * batch_size))
+fig, axes = plt.subplots(batch_size, 4, figsize=(8, 4 * batch_size))
 
 for i in range(batch_size):
     img_clean = clean_img[i].cpu() * 0.5 + 0.5
-    img_gen = generated_img[i].cpu() * 0.5 + 0.5
+    img_gen1 = generated_img1[i].cpu() * 0.5 + 0.5
+    img_gen2 = generated_img2[i].cpu() * 0.5 + 0.5
+    img_gen3 = generated_img3[i].cpu() * 0.5 + 0.5
 
     axes[i, 0].imshow(img_clean.permute(1, 2, 0).clamp(0, 1))
     axes[i, 0].axis('off')
     axes[i, 0].set_title('Clean')
 
-    axes[i, 1].imshow(img_gen.permute(1, 2, 0).clamp(0, 1))
+    axes[i, 1].imshow(img_gen1.permute(1, 2, 0).clamp(0, 1))
     axes[i, 1].axis('off')
-    axes[i, 1].set_title('Generated')
+    axes[i, 1].set_title(f'T={diffusion_model1.timesteps}')
 
+    axes[i, 2].imshow(img_gen2.permute(1, 2, 0).clamp(0, 1))
+    axes[i, 2].axis('off')
+    axes[i, 2].set_title(f'T={diffusion_model2.timesteps}')
+
+    axes[i, 3].imshow(img_gen3.permute(1, 2, 0).clamp(0, 1))
+    axes[i, 3].axis('off')
+    axes[i, 3].set_title(f'T={diffusion_model3.timesteps}')
 plt.tight_layout()
 
-# Save with filename based on model
-ddpm_base = os.path.splitext(os.path.basename(args.diffusion_path))[0]
-filename = f"{ddpm_base}_comparison.png"
+# Save with filename based on model]
+filename = f"ddpm_comparison.png"
 save_path = os.path.join(args.save_dir, filename)
 
 plt.savefig(save_path)

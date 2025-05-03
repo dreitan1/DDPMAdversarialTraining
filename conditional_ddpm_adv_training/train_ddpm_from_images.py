@@ -32,6 +32,7 @@ def train_diffusion(ddpm, dataloader, optimizer, epochs, device, save_path, data
             param_embed = param_embed.to(device)
 
             # Truncate param vector to 256-dim
+            # Truncate param vector to 256-dim
             param_embed = param_embed.view(param_embed.size(0), -1)
             param_proj = param_embed[:, :256].to(device)
 
@@ -62,6 +63,10 @@ def train_diffusion(ddpm, dataloader, optimizer, epochs, device, save_path, data
     total_time = time.time() - total_train_start
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
 
+
+    print(f"Total training time: {total_time:.2f} seconds")
+    print(f"Average time per epoch: {avg_epoch_time:.2f} seconds")
+
     # Get GPU or CPU name
     if device.type == "cuda":
         device_name = torch.cuda.get_device_name(device)
@@ -91,6 +96,8 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--save-dir', type=str, default='checkpoints_ddpm')
     parser.add_argument('--save-every', type=int, default=5, help='Save checkpoint every N epochs')
+    parser.add_argument('--timesteps', type=int, default=1000, help='')
+    
     args = parser.parse_args()
 
     device = torch.device("mps" if torch.backends.mps.is_available() else
@@ -103,7 +110,7 @@ def main():
     dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=0)
 
     model = ConditionalUNet(param_dim=256)
-    diffusion = GaussianDiffusion(model=model, timesteps=1000)
+    diffusion = GaussianDiffusion(model=model, timesteps=args.timesteps)
     optimizer = optim.Adam(diffusion.parameters(), lr=args.lr)
 
     train_diffusion(diffusion, dataloader, optimizer, args.epochs, device, args.save_dir, dataset_size, args.save_every)
