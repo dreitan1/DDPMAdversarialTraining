@@ -45,20 +45,19 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 
-#### Train the Conditional DDPM
-python ./train_ddpm_from_images.py --data-dir ../train_data --epoch 200
+#### Train the Conditional DDPM (For example)
+python train_ddpm_from_images.py --data-dir ../train_data --epochs 500 --save-every 100 --save-dir checkout_ddpm_t500_ep500
+
+python train_ddpm_from_images.py --data-dir ../train_data --epochs 500 --save-every 100 --timesteps 300 --save-dir checkout_ddpm_t300_ep500
+
 
 #### Verify DDPM
-python verify_ddpm.py --diffusion-path checkpoints_ddpm/diffusion_epoch400.pth
-python verify_ddpm.py --diffusion-path checkpoints_ddpm/diffusion_epoch1.pth --save-dir verify_resnet 
+python verify_ddpm.py --diffusion-path checkpoints_ddpm_t500_ep500/diffusion_epoch500.pth -save-dir checkpoints_ddpm_t500_ep500
 
 #### Adversarial Training
-python train_resnet_adv.py --diffusion-path ./checkpoints_ddpm/diffusion_epoch100.pth --epochs 1 --save-every 50
+python train_resnet_adv.py --diffusion-path ./checkpoints_ddpm/diffusion_epoch100.pth --epochs 20 --save-every 2
+
 
 #### Evaluate Adversarial Training
-python eval_resnet_adv.py --resnet-path checkpoints_resnet_adv/resnet_epoch1.pth --fgsm-eps 0.1
+python eval_resnet_adv.py --resnet-path checkpoints_ddpm_t500_ep500/diffusion_epoch500.pth 
 
-
-nohup python train_resnet_adv.py --diffusion-path checkpoints_ddpm/diffusion_epoch500.pth --clean-ratio 1 --epochs 500  --save-every 50&
-
-python train_resnet_adv.py --diffusion-path checkpoints_ddpm/diffusion_epoch400.pth --epochs 10  --save-every 50
